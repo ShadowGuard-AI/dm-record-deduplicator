@@ -1,3 +1,5 @@
+![Banner](banner.png)
+
 # dm-record-deduplicator
 Identifies and removes duplicate records based on a configurable set of columns. Can be used to obfuscate the true size of a dataset. CLI tool with options for specifying key columns, and methods for handling near-duplicate records with a user-defined similarity threshold. - Focused on Tools designed to generate or mask sensitive data with realistic-looking but meaningless values
 
