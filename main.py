@@ -1,8 +1,8 @@
 import argparse
 import logging
 import pandas as pd
-from faker import Faker
 import os
+import sys
 from typing import List, Union
 
 # Configure logging
@@ -159,29 +159,29 @@ def deduplicate_records(
 
                 return similarity_score >= threshold
 
-            # Group by a primary key (first key column)
+            # Group by a primary key (first key column). Grouping is a
+            # speed choice, not part of the match definition: two rows
+            # whose first key column differs are never compared, so a
+            # near duplicate that differs in that column survives.
             primary_key = key_columns[0]
             grouped = df.groupby(primary_key)
 
             deduplicated_rows = []
-            processed_groups = set()
-
-            for group_key, group_df in grouped:
-                if group_key in processed_groups:
-                    continue
-                # Compare each row in the group with the others to identify near duplicates
+            for _group_key, group_df in grouped:
+                # Keep the first row of each near-duplicate cluster, the
+                # same keep rule exact mode uses (drop_duplicates
+                # keep="first"). The previous loop compared each row
+                # against the rows after it and dropped the earlier row
+                # on a match, which kept the last variant of a cluster
+                # and silently inverted that rule.
+                kept = []
                 for i in range(len(group_df)):
-                    row1 = group_df.iloc[i]
-                    is_duplicate = False
-                    for j in range(i + 1, len(group_df)):
-                        row2 = group_df.iloc[j]
-                        if are_near_duplicates(row1, row2, key_columns, similarity_threshold):
-                            is_duplicate = True
-                            break # Skip the rest of the rows
-                    if not is_duplicate:
-                        deduplicated_rows.append(row1)
-                processed_groups.add(group_key)
-            df_deduplicated = pd.DataFrame(deduplicated_rows)
+                    row = group_df.iloc[i]
+                    if any(are_near_duplicates(row, k, key_columns, similarity_threshold) for k in kept):
+                        continue
+                    kept.append(row)
+                    deduplicated_rows.append(row)
+            df_deduplicated = pd.DataFrame(deduplicated_rows, columns=df.columns)
 
         # Write the deduplicated DataFrame to a new CSV file
         df_deduplicated.to_csv(output_file, index=False)
@@ -225,9 +225,14 @@ def main():
     except ValueError as e:
         logging.error(f"Invalid arguments: {e}")
         print(f"Error: {e}")  # Print to console for user feedback
+        # Exit non-zero: callers and scripts need the failure signal.
+        # This used to fall through and exit 0 on a missing input file
+        # or an unknown key column, the two failures a user hits most.
+        sys.exit(1)
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         print(f"Error: {e}")  # Print to console for user feedback
+        sys.exit(1)
     finally:
         #Remove the file handler after main is done to ensure logs are correctly managed in future executions
         logging.getLogger().removeHandler(file_handler)
