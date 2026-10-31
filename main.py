@@ -4,6 +4,8 @@ import pandas as pd
 import os
 import sys
 from typing import List, Union
+import difflib
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -29,13 +31,13 @@ def setup_argparse():
         "--similarity_threshold",
         type=float,
         default=0.9,
-        help="Similarity threshold for near-duplicate detection (0.0 - 1.0).",
+        help="Similarity threshold for near-duplicate detection (0.0 - 1.0). Similarity is the difflib ratio, an edit based measure, averaged over the key columns.",
     )
     parser.add_argument(
         "-n",
         "--near_duplicate",
         action="store_true",
-        help="Enable near-duplicate detection based on similarity threshold."
+        help="Enable near-duplicate detection based on similarity threshold. Rows are compared across all rows regardless of the first key column, and input row order is preserved in the output."
     )
     parser.add_argument(
         "-l",
@@ -148,39 +150,20 @@ def deduplicate_records(
                 similarity_score = 0.0
                 for col in key_columns:
                     if isinstance(row1[col], str) and isinstance(row2[col], str):
-                        # Simplified similarity: ratio of identical characters
-                        max_len = max(len(row1[col]), len(row2[col]))
-                        if max_len > 0:  # Avoid division by zero
-                            identical_chars = sum(c1 == c2 for c1, c2 in zip(row1[col], row2[col]))
-                            similarity_score += identical_chars / max_len
+                        similarity_score += difflib.SequenceMatcher(None, row1[col], row2[col]).ratio()
                     elif row1[col] == row2[col]:
-                        similarity_score += 1.0 # exact match
-                similarity_score /= len(key_columns) #Average similarity score
-
+                        similarity_score += 1.0
+                similarity_score /= len(key_columns)
                 return similarity_score >= threshold
 
-            # Group by a primary key (first key column). Grouping is a
-            # speed choice, not part of the match definition: two rows
-            # whose first key column differs are never compared, so a
-            # near duplicate that differs in that column survives.
-            primary_key = key_columns[0]
-            grouped = df.groupby(primary_key)
-
+            kept = []
             deduplicated_rows = []
-            for _group_key, group_df in grouped:
-                # Keep the first row of each near-duplicate cluster, the
-                # same keep rule exact mode uses (drop_duplicates
-                # keep="first"). The previous loop compared each row
-                # against the rows after it and dropped the earlier row
-                # on a match, which kept the last variant of a cluster
-                # and silently inverted that rule.
-                kept = []
-                for i in range(len(group_df)):
-                    row = group_df.iloc[i]
-                    if any(are_near_duplicates(row, k, key_columns, similarity_threshold) for k in kept):
-                        continue
-                    kept.append(row)
-                    deduplicated_rows.append(row)
+            for i in range(len(df)):
+                row = df.iloc[i]
+                if any(are_near_duplicates(row, k, key_columns, similarity_threshold) for k in kept):
+                    continue
+                kept.append(row)
+                deduplicated_rows.append(row)
             df_deduplicated = pd.DataFrame(deduplicated_rows, columns=df.columns)
 
         # Write the deduplicated DataFrame to a new CSV file
@@ -204,6 +187,14 @@ def main():
     Main function to execute the deduplication process.
     """
     args = setup_argparse()
+
+    resolved_input = Path(args.input_file).resolve()
+    if Path(args.output_file).resolve() == resolved_input:
+        print("Error: Output file must not be the same as the input file.")
+        sys.exit(1)
+    if Path(args.log_file).resolve() == resolved_input:
+        print("Error: Log file must not be the same as the input file.")
+        sys.exit(1)
 
     # Configure logging to file
     log_file = args.log_file
