@@ -88,6 +88,10 @@ def validate_args(args: argparse.Namespace) -> None:
     if not is_valid_file(args.input_file):
         raise ValueError(f"Input file '{args.input_file}' does not exist or is not a file.")
 
+    # Validation has a side effect here, and I keep it visible: checking
+    # the arguments creates the output directory when it is missing, so a
+    # run that then fails on a bad key column still leaves a new directory
+    # behind.
     output_dir = os.path.dirname(args.output_file)
     if output_dir and not is_valid_directory(output_dir) and output_dir != "":
         try:
@@ -134,7 +138,12 @@ def deduplicate_records(
         # Read the CSV file into a pandas DataFrame
         df = pd.read_csv(input_file)
 
-        # Handle missing values in key columns by filling with an empty string to avoid errors
+        # Filling missing key values with an empty string is a decision,
+        # not just error avoidance: two rows that are both missing the same
+        # key value become equal on that column, and in exact mode they
+        # deduplicate against each other. A row with a missing key and a
+        # row with a genuinely empty key are also the same thing from here
+        # on. The fill happens on the frame that gets written out, too.
         df[key_columns] = df[key_columns].fillna("")
 
         # Identify duplicate records based on the specified key columns
@@ -147,6 +156,14 @@ def deduplicate_records(
             # The following example demonstrates a simplified approach:
 
             def are_near_duplicates(row1, row2, key_columns, threshold):
+                # The score is a plain average across the key columns, and
+                # averages hide single columns: with ten key columns, one
+                # column that shares nothing at all still lets a pair pass
+                # a 0.9 threshold if the other nine match. A pair where one
+                # side is text and the other is a number scores zero on
+                # that column even when the digits are the same, because
+                # only two strings take the ratio path and the equality
+                # check compares across types.
                 similarity_score = 0.0
                 for col in key_columns:
                     if isinstance(row1[col], str) and isinstance(row2[col], str):
@@ -156,6 +173,12 @@ def deduplicate_records(
                 similarity_score /= len(key_columns)
                 return similarity_score >= threshold
 
+            # Greedy and first come first kept: each row is compared only
+            # against rows already kept, never against rows already dropped.
+            # Near duplication is not transitive here. If A matches B and B
+            # matches C but A does not match C, B is dropped against A and C
+            # is then kept, so the output can still hold a pair one step
+            # apart. Which rows survive depends on input order throughout.
             kept = []
             deduplicated_rows = []
             for i in range(len(df)):
